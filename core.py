@@ -249,6 +249,71 @@ def is_main_thread():
     return threading.get_ident() == threading.main_thread().ident
 
 
+def handle_for_control_flow(parent: ReactiveNode, child: For, idx: int):
+    def handler():
+        if not is_main_thread():
+            raise ValueError("Signal handler must run in main thread")
+        global __is_first_render__
+
+        # 要求 signal 返回一个 list
+        # list 中的东西是当前节点的 children
+        # 但 reconcile_children() 只会在初始化时调用一次
+        # 而 handler() 会在每次 signal 变化时调用
+        # 所以需要一个逻辑来处理 signal 变化时的 children 变化
+        items: list[VirtualWidget | Component] = child.accessor()
+        if not isinstance(items, list):
+            items = [items]
+
+        if parent.side_effect is None:
+            parent.side_effect = SignalChidren()
+
+        host_node = parent.side_effect.host_node
+        if host_node is None:
+            host_node = parent.find_virtual_widget_parent()
+            parent.side_effect.host_node = host_node
+        parent.side_effect.old_start_idx = idx
+        if parent.side_effect.host_node is None:
+            raise ValueError("Parent not found")
+
+        current_length = len(items)
+        if __is_first_render__:
+            length = len(items)
+        else:
+            length = parent.side_effect.old_length
+
+        # 暂且要求内容必须都是可以直接创建 qt_widget 的 VirtualWidget
+        qt_widgets = []
+        for item in items:
+            qt_widgets.append(create_qt_widget(item))
+
+        if __is_first_render__:
+            if current_length == 0:
+                host_node.qt_widget.layout().addWidget(create_qt_widget(child.fallback))
+            else:
+                for widget in qt_widgets:
+                    host_node.qt_widget.layout().addWidget(widget)
+        else:
+            if isinstance(length, int) and length > 0:
+                # 如果有需要删除的 widget
+                remove_widgets_by_length(
+                    host_node, parent.side_effect.old_start_idx, length
+                )
+            if current_length == 0:
+                host_node.qt_widget.layout().addWidget(create_qt_widget(child.fallback))
+            else:
+                insert_widgets_to_layout(
+                    host_node.qt_widget.layout(),
+                    parent.side_effect.old_start_idx,
+                    qt_widgets,
+                )
+        if child.fallback is not None and current_length == 0:
+            parent.side_effect.old_length = 1
+        else:
+            parent.side_effect.old_length = current_length
+
+    create_effect(handler)
+
+
 class SignalChidren:
     def __init__(self):
         self.old_start_idx: int | None = None
@@ -303,73 +368,10 @@ class ReactiveNode(VirtualWidget):
         for idx, child in enumerate(children):
             if isinstance(child, ControlFlow):
                 if isinstance(child, For):
-
-                    def handler():
-                        if not is_main_thread():
-                            raise ValueError("Signal handler must run in main thread")
-                        global __is_first_render__
-
-                        # 要求 signal 返回一个 list
-                        # list 中的东西是当前节点的 children
-                        # 但 reconcile_children() 只会在初始化时调用一次
-                        # 而 handler() 会在每次 signal 变化时调用
-                        # 所以需要一个逻辑来处理 signal 变化时的 children 变化
-                        items: list[VirtualWidget | Component] = child.accessor()
-                        if not isinstance(items, list):
-                            items = [items]
-
-                        if self.side_effect is None:
-                            self.side_effect = SignalChidren()
-
-                        host_node = self.side_effect.host_node
-                        if host_node is None:
-                            host_node = self.find_virtual_widget_parent()
-                            self.side_effect.host_node = host_node
-                        self.side_effect.old_start_idx = idx
-                        if self.side_effect.host_node is None:
-                            raise ValueError("Parent not found")
-
-                        current_length = len(items)
-                        if __is_first_render__:
-                            length = len(items)
-                        else:
-                            length = self.side_effect.old_length
-
-                        # 暂且要求内容必须都是可以直接创建 qt_widget 的 VirtualWidget
-                        qt_widgets = []
-                        for item in items:
-                            qt_widgets.append(create_qt_widget(item))
-
-                        if __is_first_render__:
-                            if current_length == 0:
-                                host_node.qt_widget.layout().addWidget(
-                                    create_qt_widget(child.fallback)
-                                )
-                            else:
-                                for widget in qt_widgets:
-                                    host_node.qt_widget.layout().addWidget(widget)
-                        else:
-                            if isinstance(length, int) and length > 0:
-                                # 如果有需要删除的 widget
-                                remove_widgets_by_length(
-                                    host_node, self.side_effect.old_start_idx, length
-                                )
-                            if current_length == 0:
-                                host_node.qt_widget.layout().addWidget(
-                                    create_qt_widget(child.fallback)
-                                )
-                            else:
-                                insert_widgets_to_layout(
-                                    host_node.qt_widget.layout(),
-                                    self.side_effect.old_start_idx,
-                                    qt_widgets,
-                                )
-                        if child.fallback is not None and current_length == 0:
-                            self.side_effect.old_length = 1
-                        else:
-                            self.side_effect.old_length = current_length
-
-                    create_effect(handler)
+                    print(f"Handling For {child}")
+                    handle_for_control_flow(self, child, idx)
+                else:
+                    raise ValueError(f"Invalid ControlFlow {child}")
             else:
                 child_node = create_reactive_node(child, self)
 
@@ -476,7 +478,8 @@ class ControlFlow(ABC):
     ControFlow must have a accessor property
     """
 
-    pass
+    def __repr__(self) -> str:
+        return f"<ControlFlow[{self.__class__.__name__}] accessor={self.accessor}>"
 
 
 class For(ControlFlow):
