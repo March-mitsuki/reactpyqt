@@ -298,65 +298,78 @@ class ReactiveNode(VirtualWidget):
     def reconcile_children(self):
         nested = []
 
-        children: list[VirtualWidget | Component | SignalAccessor] = flatten(
-            self.children
-        )
+        children: list[VirtualWidget | Component | ControlFlow] = flatten(self.children)
         prev_sibling = None
         for idx, child in enumerate(children):
-            if callable(child):  # handle signal accessor
+            if isinstance(child, ControlFlow):
+                if isinstance(child, For):
 
-                def handler():
-                    if not is_main_thread():
-                        raise ValueError("Signal handler must run in main thread")
-                    global __is_first_render__
+                    def handler():
+                        if not is_main_thread():
+                            raise ValueError("Signal handler must run in main thread")
+                        global __is_first_render__
 
-                    # 要求 signal 返回一个 list
-                    # list 中的东西是当前节点的 children
-                    # 但 reconcile_children() 只会在初始化时调用一次
-                    # 而 handler() 会在每次 signal 变化时调用
-                    # 所以需要一个逻辑来处理 signal 变化时的 children 变化
-                    items: list[VirtualWidget | Component] = child()
-                    if not isinstance(items, list):
-                        items = [items]
+                        # 要求 signal 返回一个 list
+                        # list 中的东西是当前节点的 children
+                        # 但 reconcile_children() 只会在初始化时调用一次
+                        # 而 handler() 会在每次 signal 变化时调用
+                        # 所以需要一个逻辑来处理 signal 变化时的 children 变化
+                        items: list[VirtualWidget | Component] = child.accessor()
+                        if not isinstance(items, list):
+                            items = [items]
 
-                    if self.side_effect is None:
-                        self.side_effect = SignalChidren()
+                        if self.side_effect is None:
+                            self.side_effect = SignalChidren()
 
-                    host_node = self.side_effect.host_node
-                    if host_node is None:
-                        host_node = self.find_virtual_widget_parent()
-                        self.side_effect.host_node = host_node
-                    self.side_effect.old_start_idx = idx
-                    if self.side_effect.host_node is None:
-                        raise ValueError("Parent not found")
+                        host_node = self.side_effect.host_node
+                        if host_node is None:
+                            host_node = self.find_virtual_widget_parent()
+                            self.side_effect.host_node = host_node
+                        self.side_effect.old_start_idx = idx
+                        if self.side_effect.host_node is None:
+                            raise ValueError("Parent not found")
 
-                    if __is_first_render__:
-                        length = len(items)
-                    else:
-                        length = self.side_effect.old_length
+                        current_length = len(items)
+                        if __is_first_render__:
+                            length = len(items)
+                        else:
+                            length = self.side_effect.old_length
 
-                    if not __is_first_render__:
-                        remove_widgets_by_length(
-                            host_node, self.side_effect.old_start_idx, length
-                        )
+                        # 暂且要求内容必须都是可以直接创建 qt_widget 的 VirtualWidget
+                        qt_widgets = []
+                        for item in items:
+                            qt_widgets.append(create_qt_widget(item))
 
-                    # 暂且要求内容必须都是可以直接创建 qt_widget 的 VirtualWidget
-                    qt_widgets = []
-                    for item in items:
-                        qt_widgets.append(create_qt_widget(item))
+                        if __is_first_render__:
+                            if current_length == 0:
+                                host_node.qt_widget.layout().addWidget(
+                                    create_qt_widget(child.fallback)
+                                )
+                            else:
+                                for widget in qt_widgets:
+                                    host_node.qt_widget.layout().addWidget(widget)
+                        else:
+                            if isinstance(length, int) and length > 0:
+                                # 如果有需要删除的 widget
+                                remove_widgets_by_length(
+                                    host_node, self.side_effect.old_start_idx, length
+                                )
+                            if current_length == 0:
+                                host_node.qt_widget.layout().addWidget(
+                                    create_qt_widget(child.fallback)
+                                )
+                            else:
+                                insert_widgets_to_layout(
+                                    host_node.qt_widget.layout(),
+                                    self.side_effect.old_start_idx,
+                                    qt_widgets,
+                                )
+                        if child.fallback is not None and current_length == 0:
+                            self.side_effect.old_length = 1
+                        else:
+                            self.side_effect.old_length = current_length
 
-                    if __is_first_render__:
-                        for widget in qt_widgets:
-                            host_node.qt_widget.layout().addWidget(widget)
-                    else:
-                        insert_widgets_to_layout(
-                            host_node.qt_widget.layout(),
-                            self.side_effect.old_start_idx,
-                            qt_widgets,
-                        )
-                    self.side_effect.old_length = len(items)
-
-                create_effect(handler)
+                    create_effect(handler)
             else:
                 child_node = create_reactive_node(child, self)
 
@@ -451,7 +464,7 @@ class Component(ABC):
     def __repr__(self) -> str:
         return f"<Component[{self.__class__.__name__}] props={self.props}>"
 
-    def render(self) -> VirtualWidget | Component:
+    def render(self) -> VirtualWidget | Component | ControlFlow:
         """
         Fine-Grained Reactivity 架构下的 render 只在初始化时运行一次
         """
@@ -459,21 +472,26 @@ class Component(ABC):
 
 
 class ControlFlow(ABC):
-    def render(self) -> SignalAccessor:
-        raise NotImplementedError("render method is not implemented")
+    """
+    ControFlow must have a accessor property
+    """
+
+    pass
 
 
-class For(Component):
-    def __init__(self, map_fn, *, each: list, fallback: Callable | None = None):
+class For(ControlFlow):
+    def __init__(
+        self,
+        *,
+        each: list,
+        map_fn: Callable | None = None,
+        fallback: Component | VirtualWidget | None = None,
+    ):
         super().__init__()
         self.map_fn = map_fn
         self.each = each
         self.fallback = fallback
-
-    def render(self):
-        result = create_memo(map_list(self.each, self.map_fn))
-        print("For result", result)
-        return result
+        self.accessor = create_memo(map_list(self.each, self.map_fn))
 
 
 def render(container: QT_Widget, component: Component):
@@ -552,6 +570,8 @@ if __name__ == "__main__":
             todo, set_todo = create_signal(["Buy milk", "Buy eggs"])
             set_timeout(lambda: set_todo(["Buy milk", "Buy eggs", "Buy bread"]), 3)
             set_timeout(lambda: set_todo(lambda prev: [*prev, "Do homework"]), 5)
+            set_timeout(lambda: set_todo([]), 7)
+            set_timeout(lambda: set_todo(["Play WuWa"]), 9)
             create_effect(lambda: print("todo", todo()))
 
             def render_list(item):
@@ -564,7 +584,11 @@ if __name__ == "__main__":
                 Input(key="input"),
                 Label("Todo List", key="todo_label"),
                 VBox(
-                    map_list(todo, render_list),
+                    For(
+                        each=todo,
+                        map_fn=render_list,
+                        fallback=Label("No todo items", key="no-todo"),
+                    ),
                     spacing=5,
                     key="todo_list",
                 ),
