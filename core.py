@@ -368,7 +368,8 @@ class ReactiveNode(VirtualWidget):
         for idx, child in enumerate(children):
             if isinstance(child, ControlFlow):
                 if isinstance(child, For):
-                    print(f"Handling For {child}")
+                    # 现在的流程是全部生成完之后才会使用 commit_root() 添加到 layout
+                    # 但这里的 handler() 会立即执行, 所以会破坏这个流程, 要想想办法
                     handle_for_control_flow(self, child, idx)
                 else:
                     raise ValueError(f"Invalid ControlFlow {child}")
@@ -585,8 +586,8 @@ if __name__ == "__main__":
                 Nav(is_logged_in=is_logged_in, key="nav-component"),
                 Label("Welcome to ReactivePyQt", key="welcome"),
                 Input(key="input"),
-                Label("Todo List", key="todo_label"),
                 VBox(
+                    Label("Todo List", key="todo_label"),
                     For(
                         each=todo,
                         map_fn=render_list,
