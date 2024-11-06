@@ -1,0 +1,12 @@
+# python venv
+reactpyqt/
+venv/
+
+# python cache
+__pycache__/
+
+# logs
+*.log
+
+# tmp files
+**tmp**
