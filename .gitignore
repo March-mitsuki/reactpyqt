@@ -5,6 +5,9 @@ venv/
 # python cache
 __pycache__/
 
+# pyenv
+.python-version
+
 # logs
 *.log
 
