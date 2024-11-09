@@ -67,9 +67,8 @@ class QT_Widget(QWidget):
         defult_layout = QVBoxLayout()
         defult_layout.setContentsMargins(0, 0, 0, 0)
         defult_layout.setSpacing(0)
-        layout = props.pop("layout", defult_layout)
+        layout: QLayout = props.pop("layout", defult_layout)
 
-        self.chiyo_children = []
         for widget in children:
             add_widget_to_layout(layout, widget)
         apply_style_kwargs(self, layout, **props)
@@ -78,8 +77,12 @@ class QT_Widget(QWidget):
             props["ref"] = self
         if props.get("key", None):
             self.setObjectName(props["key"])
+            layout.setObjectName(f"{props['key']}_layout")
 
         self.setLayout(layout)
+
+    def __repr__(self) -> str:
+        return f"<QT_Widget[{self.__class__.__name__}] objectName={self.objectName()}>"
 
     def update_props(self, **props):
         apply_style_kwargs(self, self.layout(), **props)
@@ -109,6 +112,9 @@ class QT_Button(QT_Widget):
 
         self.button = QPushButton(text=text)
         self.button.clicked.connect(self.clicked)
+        if props.get("key", None):
+            self.button.setObjectName(f"{props['key']}_button")
+
         self.layout().addWidget(self.button)
 
     def clicked(self):
@@ -120,6 +126,9 @@ class QT_Label(QT_Widget):
         super().__init__(**props)
 
         self.label = QLabel(text=text)
+        if props.get("key", None):
+            self.label.setObjectName(f"{props['key']}_label")
+
         self.layout().addWidget(self.label)
 
 
@@ -128,4 +137,7 @@ class QT_Input(QT_Widget):
         super().__init__(**props)
 
         self.input = QLineEdit()
+        if props.get("key", None):
+            self.input.setObjectName(f"{props['key']}_input")
+
         self.layout().addWidget(self.input)

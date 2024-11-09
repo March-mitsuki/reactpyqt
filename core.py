@@ -31,29 +31,63 @@ def flatten(nested_list: list) -> list:
 
 
 def is_component_node(obj: ReactiveNode) -> bool:
-    return obj.component is not None and obj.tag is None
+    return obj.component is not None and obj.tag is None and obj.control_flow is None
 
 
 def is_virtual_widget_node(obj: ReactiveNode) -> bool:
-    return obj.component is None and obj.tag is not None
+    return obj.component is None and obj.tag is not None and obj.control_flow is None
+
+
+def is_control_flow_node(obj: ReactiveNode) -> bool:
+    return obj.component is None and obj.tag is None and obj.control_flow is not None
+
+
+def find_widget_index(layout: QLayout, object_name: str) -> int:
+    """
+    Find qt widget index in layout by object name.
+
+    If not found, return -1
+    """
+    for index in range(layout.count()):
+        item = layout.itemAt(index)
+        widget = item.widget()
+        if widget and widget.objectName() == object_name:
+            return index
+    return -1  # 未找到该objectName的控件
 
 
 def remove_widgets_from_layout(layout: QLayout, indexes: list[int]):
     # 从后往前删除，避免删除后索引错乱
     for idx in sorted(indexes, reverse=True):
-        print(f"Removing widget from {layout} at index {idx}")
         item = layout.itemAt(idx)
-        print("Removing item", item)
         if item:
+            logger.info(f"Removing widget {item.widget().objectName()}")
             layout.removeWidget(item.widget())
+    layout.update()
 
 
-def remove_widgets_by_length(node: ReactiveNode, start: int, length: int):
-    if node.qt_widget is None:
+def remove_widgets_by_length(
+    host_node: ReactiveNode,
+    node: ReactiveNode,
+    length: int,
+):
+    if host_node.qt_widget is None:
         raise ValueError("Node has no QT_Widget")
-    layout = node.qt_widget.layout()
-    indexes = list(range(start, start + length))
-    print(f"Removing widgets by indexes {indexes}")
+    layout = host_node.qt_widget.layout()
+
+    prev_widget = node.find_virtual_widget_prev_sibling()
+    if prev_widget:
+        index = find_widget_index(layout, prev_widget.qt_widget.objectName())
+        if index < 0:
+            raise ValueError(
+                f"Cannot find widget {prev_widget.qt_widget.objectName()} in layout"
+            )
+        index += 1
+    else:
+        index = 0
+
+    indexes = list(range(index, index + length))
+    logger.info(f"Removing widgets from {layout.objectName()} by indexes {indexes}")
     remove_widgets_from_layout(layout, indexes)
 
 
@@ -64,14 +98,32 @@ def remove_widgets_by_indexes(node: ReactiveNode, indexes: list[int]):
     remove_widgets_from_layout(layout, indexes)
 
 
-def insert_widgets_to_layout(layout: QLayout, start: int, widgets: list[QT_Widget]):
-    if not isinstance(layout, QHBoxLayout) and not isinstance(layout, QVBoxLayout):
+def insert_widgets_to_layout(
+    host_layout: QLayout,
+    node: ReactiveNode,
+    widgets: list[QT_Widget],
+):
+    if not isinstance(host_layout, QHBoxLayout) and not isinstance(
+        host_layout, QVBoxLayout
+    ):
         raise ValueError(
             "insert_widgets_to_layout only supports QHBoxLayout and QVBoxLayout"
         )
 
+    prev_widget = node.find_virtual_widget_prev_sibling()
+    if prev_widget:
+        index = find_widget_index(host_layout, prev_widget.qt_widget.objectName())
+        if index < 0:
+            raise ValueError(
+                f"Cannot find widget {prev_widget.qt_widget.objectName()} in layout"
+            )
+        index += 1
+    else:
+        index = 0
+
     for idx, widget in enumerate(widgets):
-        layout.insertWidget(start + idx, widget)
+        logger.info(f"Inserting widget {widget.objectName()} at index {index + idx}")
+        host_layout.insertWidget(index + idx, widget)
 
 
 class Timeout(QRunnable):
@@ -179,8 +231,8 @@ class VirtualWidget(ABC):
     def __init__(self, *children, **props):
         logger.debug(f"Creating VirtualWidget props {props}")
         self.tag: str | None = props.pop("tag", None)
-        self.key: str = props.pop("key", str(uuid4()))
-        self.children: list[VirtualWidget | Component | SignalAccessor] = children
+        self.key: str = props.get("key", str(uuid4()))
+        self.children: list[VirtualWidget | Component | ControlFlow] = children
         self.props: dict = props
 
     def __repr__(self) -> str:
@@ -241,6 +293,8 @@ def create_reactive_node(
         result = ReactiveNode.from_virtual_widget(component, parent)
         result.qt_widget = create_qt_widget(result)
         return result
+    elif isinstance(component, ControlFlow):
+        return ReactiveNode.from_control_flow(component, parent)
     else:
         raise ValueError(f"Invalid component {component}")
 
@@ -249,73 +303,76 @@ def is_main_thread():
     return threading.get_ident() == threading.main_thread().ident
 
 
-def handle_for_control_flow(parent: ReactiveNode, child: For, idx: int):
+def handle_for_control_flow(
+    parent: ReactiveNode,
+    child: ReactiveNode,
+):
+    if not isinstance(child.control_flow, For):
+        raise ValueError("ControlFlow must be For")
+
+    host_node = parent.find_virtual_widget_parent(include_self=True)
+    length = None
+
     def handler():
         if not is_main_thread():
             raise ValueError("Signal handler must run in main thread")
         global __is_first_render__
+        nonlocal host_node, length
 
-        # 要求 signal 返回一个 list
-        # list 中的东西是当前节点的 children
-        # 但 reconcile_children() 只会在初始化时调用一次
-        # 而 handler() 会在每次 signal 变化时调用
-        # 所以需要一个逻辑来处理 signal 变化时的 children 变化
-        items: list[VirtualWidget | Component] = child.accessor()
+        items: list[VirtualWidget | Component] = child.control_flow.accessor()
         if not isinstance(items, list):
-            items = [items]
-
-        if parent.side_effect is None:
-            parent.side_effect = SignalChidren()
-
-        host_node = parent.side_effect.host_node
-        if host_node is None:
-            host_node = parent.find_virtual_widget_parent()
-            parent.side_effect.host_node = host_node
-        parent.side_effect.old_start_idx = idx
-        if parent.side_effect.host_node is None:
-            raise ValueError("Parent not found")
+            raise ValueError(f"Invalid control flow For items {items}")
 
         current_length = len(items)
         if __is_first_render__:
-            length = len(items)
-        else:
-            length = parent.side_effect.old_length
+            length = current_length
 
-        # 暂且要求内容必须都是可以直接创建 qt_widget 的 VirtualWidget
-        qt_widgets = []
-        for item in items:
-            qt_widgets.append(create_qt_widget(item))
+        # 暂且要求 accessor 内只能返回 virtual widget
+        if not all(isinstance(item, VirtualWidget) for item in items):
+            raise ValueError("For items must be VirtualWidget")
+
+        qt_widgets = [create_qt_widget(item) for item in items]
 
         if __is_first_render__:
             if current_length == 0:
-                host_node.qt_widget.layout().addWidget(create_qt_widget(child.fallback))
-            else:
-                for widget in qt_widgets:
-                    host_node.qt_widget.layout().addWidget(widget)
-        else:
-            if isinstance(length, int) and length > 0:
-                # 如果有需要删除的 widget
-                remove_widgets_by_length(
-                    host_node, parent.side_effect.old_start_idx, length
-                )
-            if current_length == 0:
-                host_node.qt_widget.layout().addWidget(create_qt_widget(child.fallback))
-            else:
                 insert_widgets_to_layout(
                     host_node.qt_widget.layout(),
-                    parent.side_effect.old_start_idx,
-                    qt_widgets,
+                    child,
+                    [create_qt_widget(child.control_flow.fallback)],
                 )
-        if child.fallback is not None and current_length == 0:
-            parent.side_effect.old_length = 1
+            else:
+                insert_widgets_to_layout(
+                    host_node.qt_widget.layout(), child, qt_widgets
+                )
         else:
-            parent.side_effect.old_length = current_length
+            if isinstance(length, int) and length > 0:
+                remove_widgets_by_length(host_node, child, length)
+
+            if current_length == 0:
+                insert_widgets_to_layout(
+                    host_node.qt_widget.layout(),
+                    child,
+                    [create_qt_widget(child.control_flow.fallback)],
+                )
+            else:
+                insert_widgets_to_layout(
+                    host_node.qt_widget.layout(), child, qt_widgets
+                )
+
+        if child.control_flow.fallback is not None and current_length == 0:
+            length = 1
+        else:
+            length = current_length
+
+        print(f"For control flow {child.key} handler done")
 
     create_effect(handler)
 
 
-class SignalChidren:
-    def __init__(self):
+class SideEffectControlFlow:
+    def __init__(self, *, type):
+        self.type: str = type
+        self.source_node: ReactiveNode | None = None
         self.old_start_idx: int | None = None
         self.old_length: int | None = None
         self.host_node: ReactiveNode | None = None
@@ -326,62 +383,117 @@ class ReactiveNode(VirtualWidget):
         logger.debug(f"Creating ReactiveNode props {props}")
         super().__init__(*children, **props)
         self.component: Component | None = None
-        self.alternate: ReactiveNode | None = None
+        self.control_flow: ControlFlow | None = None
         self.qt_widget: QT_Widget | None = None
         self.child: ReactiveNode | None = None
         self.parent: ReactiveNode | None = None
         self.sibling: ReactiveNode | None = None
-        self.side_effect: SignalChidren | None = None
+        self.prev_sibling: ReactiveNode | None = None
 
     def __repr__(self) -> str:
-        return f"<ReactiveNode tag={self.tag} key={self.key} component={self.component} props={self.props} qt_widget={self.qt_widget}>"
-        # return f"<ReactiveNode tag={self.tag} key={self.key} component={self.component} props={self.props}>"
-        # return f"<ReactiveNode tag={self.tag} key={self.key} component={self.component}>"
+        # return f"""<ReactiveNode tag={
+        #     self.tag
+        # } parent={
+        #     self.parent.key if self.parent else "none"
+        # } child={
+        #     self.child.key if self.child else "none"
+        # } sibling={
+        #     self.sibling.key if self.sibling else "none"
+        # } prev_sibling={
+        #     self.prev_sibling.key if self.prev_sibling else "none"
+        # }>"""
+        # return f"<ReactiveNode tag={self.tag} key={self.key} component={self.component} control_flow={self.control_flow} props={self.props} qt_widget={self.qt_widget}>"
+        return f"<ReactiveNode tag={self.tag} key={self.key} component={self.component} control_flow={self.control_flow} qt_widget={self.qt_widget}>"
+        # return f"<ReactiveNode tag={self.tag} key={self.key} component={self.component} control_flow={self.control_flow} props={self.props}>"
+        # return f"<ReactiveNode tag={self.tag} key={self.key} component={self.component} control_flow={self.control_flow}>"
 
-    def find_parent(self, cb: Callable[[ReactiveNode], bool]):
-        node = self
+    def find_parent(
+        self,
+        cb: Callable[[ReactiveNode], bool],
+        *,
+        include_self=True,
+    ):
+        if include_self:
+            node = self
+        else:
+            node = self.parent
+
         while node is not None:
             if cb(node):
                 return node
             node = node.parent
         return None
 
-    def find_child(self, cb: Callable[[ReactiveNode], bool]):
-        node = self
+    def find_child(
+        self,
+        cb: Callable[[ReactiveNode], bool],
+        *,
+        include_self=True,
+    ):
+        if include_self:
+            node = self
+        else:
+            node = self.child
+
         while node is not None:
             if cb(node):
                 return node
             node = node.child
         return None
 
-    def find_virtual_widget_parent(self):
-        return self.find_parent(lambda node: is_virtual_widget_node(node))
+    def find_prev_sibling(
+        self,
+        cb: Callable[[ReactiveNode], bool],
+        *,
+        include_self=True,
+    ):
+        if include_self:
+            node = self
+        else:
+            node = self.prev_sibling
 
-    def find_virtual_widget_child(self):
-        return self.find_child(lambda node: is_virtual_widget_node(node))
+        while node is not None:
+            if cb(node):
+                return node
+            node = node.prev_sibling
+        return None
+
+    def find_virtual_widget_parent(self, *, include_self=True):
+        return self.find_parent(
+            lambda node: is_virtual_widget_node(node),
+            include_self=include_self,
+        )
+
+    def find_virtual_widget_child(self, *, include_self=True):
+        return self.find_child(
+            lambda node: is_virtual_widget_node(node),
+            include_self=include_self,
+        )
+
+    def find_virtual_widget_prev_sibling(self, *, include_self=True):
+        return self.find_prev_sibling(
+            lambda node: is_virtual_widget_node(node),
+            include_self=include_self,
+        )
 
     def reconcile_children(self):
         nested = []
 
         children: list[VirtualWidget | Component | ControlFlow] = flatten(self.children)
+        print(f"Reconciling {self.key} children", [child.key for child in children])
         prev_sibling = None
         for idx, child in enumerate(children):
-            if isinstance(child, ControlFlow):
-                if isinstance(child, For):
-                    # 现在的流程是全部生成完之后才会使用 commit_root() 添加到 layout
-                    # 但这里的 handler() 会立即执行, 所以会破坏这个流程, 要想想办法
-                    handle_for_control_flow(self, child, idx)
-                else:
-                    raise ValueError(f"Invalid ControlFlow {child}")
-            else:
-                child_node = create_reactive_node(child, self)
+            print(f"Reconciling {self.key} child {child.key}")
+            child_node = create_reactive_node(child, self)
 
-                if idx == 0:
-                    self.child = child_node
-                else:
-                    prev_sibling.sibling = child_node
-                prev_sibling = child_node
-                nested.append(child_node)
+            if idx == 0:
+                self.child = child_node
+            else:
+                child_node.prev_sibling = prev_sibling
+                prev_sibling.sibling = child_node
+
+            prev_sibling = child_node
+            nested.append(child_node)
 
         return nested
 
@@ -390,26 +502,9 @@ class ReactiveNode(VirtualWidget):
 
         while len(stack) > 0:
             current_node = stack.pop()
+            print(f"Reconciling {current_node.key}")
             nested_child = current_node.reconcile_children()
             stack.extend(nested_child)
-
-    def to_tree(self):
-        stack = [self]
-
-        while len(stack) > 0:
-            current_node = stack.pop()
-            children = flatten(current_node.children)  # 展开 list.map() 的结果
-
-            prev_sibling = None
-            for idx, child in enumerate(children):
-                child_node = create_reactive_node(child, current_node)
-
-                if idx == 0:
-                    current_node.child = child_node
-                else:
-                    prev_sibling.sibling = child_node
-                prev_sibling = child_node
-                stack.append(child_node)
 
     def for_each_child(
         self,
@@ -447,7 +542,6 @@ class ReactiveNode(VirtualWidget):
         result = ReactiveNode(
             *virtual_widget.children,
             tag=virtual_widget.tag,
-            key=virtual_widget.key,
             **virtual_widget.props,
         )
         result.parent = parent
@@ -459,9 +553,22 @@ class ReactiveNode(VirtualWidget):
 
         return result
 
+    @staticmethod
+    def from_control_flow(control_flow: ControlFlow, parent: ReactiveNode):
+        result = None
+        if isinstance(control_flow, For):
+            result = ReactiveNode()
+            result.parent = parent
+            result.control_flow = control_flow
+            result.key = control_flow.key
+        else:
+            raise ValueError(f"Invalid ControlFlow {control_flow}")
+        return result
+
 
 class Component(ABC):
     def __init__(self, **props):
+        self.key = props.get("key", str(uuid4()))
         self.props = props
 
     def __repr__(self) -> str:
@@ -479,8 +586,12 @@ class ControlFlow(ABC):
     ControFlow must have a accessor property
     """
 
+    def __init__(self, key: str):
+        self.key = key
+        self.accessor = None
+
     def __repr__(self) -> str:
-        return f"<ControlFlow[{self.__class__.__name__}] accessor={self.accessor}>"
+        return f"<ControlFlow[{self.__class__.__name__}] key={self.key} accessor={self.accessor}>"
 
 
 class For(ControlFlow):
@@ -490,12 +601,45 @@ class For(ControlFlow):
         each: list,
         map_fn: Callable | None = None,
         fallback: Component | VirtualWidget | None = None,
+        key: str = str(uuid4()),
     ):
-        super().__init__()
+        super().__init__(key=key)
         self.map_fn = map_fn
         self.each = each
         self.fallback = fallback
         self.accessor = create_memo(map_list(self.each, self.map_fn))
+
+
+def print_layout_contents(layout: QLayout, level=0):
+    # logger.info(
+    #     f"Printing layout {layout.objectName()} ({type(layout).__name__}) items {layout.count()}"
+    # )
+
+    indent = "  " * level
+    for i in range(layout.count()):
+        item = layout.itemAt(i)
+        widget = item.widget()
+        sub_layout = item.layout()
+        widget_layout = widget.layout() if widget else None
+
+        if widget:
+            # 如果是QWidget，打印其信息
+            print(f"{indent}Widget: {widget.objectName()} ({type(widget).__name__})")
+
+        if widget_layout is not None:
+            # 如果这个widget有一个布局，那么递归调用
+            # logger.info(f"Have widget layout {widget_layout}")
+            print(
+                f"{indent}Widget-layout: {widget_layout.objectName()} ({type(widget.layout()).__name__})"
+            )
+            print_layout_contents(widget.layout(), level + 1)
+
+        if sub_layout:
+            # 如果是子布局，递归调用这个函数
+            print(
+                f"{indent}Layout: {widget_layout.objectName()} {type(sub_layout).__name__}"
+            )
+            print_layout_contents(sub_layout, level + 1)
 
 
 def render(container: QT_Widget, component: Component):
@@ -511,21 +655,47 @@ def render(container: QT_Widget, component: Component):
         root_node.print_tree()
 
         def cb(node: ReactiveNode, _: int):
-            if node.parent is not None and node.parent.qt_widget is not None:
-                if node.qt_widget is None and node.component is not None:
-                    logger.debug(f"Adding {node.child} to {node.parent}")
-                    node.parent.qt_widget.layout().addWidget(node.child.qt_widget)
+            if node.parent is None:
+                return
+
+            host_node = node.parent.find_virtual_widget_parent(include_self=True)
+            if not host_node:
+                return
+
+            if is_control_flow_node(node):
+                if isinstance(node.control_flow, For):
+                    handle_for_control_flow(host_node, node)
+                else:
+                    raise ValueError(f"Invalid control flow {node.control_flow}")
+            else:
+                added_node = node.find_virtual_widget_child(include_self=True)
+                if not added_node:
                     return
 
-                if node.qt_widget is not None:
-                    logger.debug(f"Adding {node} to {node.parent}")
-                    node.parent.qt_widget.layout().addWidget(node.qt_widget)
-                    return
-
-                raise ValueError(f"Invalid node {node}")
+                logger.info(f"Adding {added_node.key} to {host_node.key}")
+                host_node.qt_widget.layout().addWidget(added_node.qt_widget)
 
         root_node.for_each_child(cb)
-        container.layout().addWidget(root_node.child.qt_widget)
+
+        first_hold = root_node.find_virtual_widget_child()
+        container.layout().addWidget(first_hold.qt_widget)
+
+        # logger.info(f"root_node.child {root_node.child}")
+        # print_layout_contents(container.layout())
+
+        # def find_widget(node: ReactiveNode, _: int):
+        #     if node.key == "todo_list":
+        #         logger.info(
+        #             f"Found todo_list {node}, layout {node.qt_widget.layout().objectName()}"
+        #         )
+        #         print_layout_contents(node.qt_widget.layout())
+        #     if node.key == "nav":
+        #         logger.info(
+        #             f"Found nav {node}, layout {node.qt_widget.layout().objectName()}"
+        #         )
+        #         print_layout_contents(node.qt_widget.layout())
+
+        # root_node.for_each_child(find_widget)
 
     commit_root()
     global __is_first_render__
@@ -568,18 +738,18 @@ if __name__ == "__main__":
         def render(self):
             is_logged_in, set_is_logged_in = create_signal(False)
             set_timeout(lambda: set_is_logged_in(True), 2)
-            create_effect(lambda: print("is_logged_in", is_logged_in()))
-            on_mount(lambda: print("App mounted"))
+            # create_effect(lambda: print("is_logged_in", is_logged_in()))
+            # on_mount(lambda: print("App mounted"))
 
-            todo, set_todo = create_signal(["Buy milk", "Buy eggs"])
+            todo, set_todo = create_signal(["First Render", "Buy something"])
             set_timeout(lambda: set_todo(["Buy milk", "Buy eggs", "Buy bread"]), 3)
             set_timeout(lambda: set_todo(lambda prev: [*prev, "Do homework"]), 5)
             set_timeout(lambda: set_todo([]), 7)
             set_timeout(lambda: set_todo(["Play WuWa"]), 9)
-            create_effect(lambda: print("todo", todo()))
+            create_effect(lambda: logger.info("todo changed: {}", todo()))
 
             def render_list(item):
-                print("Rendering item", item)
+                # print("Rendering item", item)
                 return Label(item, key=item)
 
             return VBox(
@@ -592,6 +762,7 @@ if __name__ == "__main__":
                         each=todo,
                         map_fn=render_list,
                         fallback=Label("No todo items", key="no-todo"),
+                        key="todo_list_for",
                     ),
                     spacing=5,
                     key="todo_list",
@@ -621,7 +792,12 @@ if __name__ == "__main__":
 
             render(self.root, App())
 
+    def handle_quit():
+        QThreadPool.globalInstance().clear()
+
     __app__ = QApplication(sys.argv)
+    __app__.aboutToQuit.connect(handle_quit)
+
     window = ReactPyQt()
     window.show()
     sys.exit(__app__.exec())
