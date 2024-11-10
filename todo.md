@@ -1,2 +1,2 @@
-- [ ] ControlFlow 中可以使用 Component
+- [x] ControlFlow For 中可以使用 Component
 - [ ] ControlFlow 支持 Switch 等条件渲染

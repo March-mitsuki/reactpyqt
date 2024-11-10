@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Callable
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -107,18 +108,21 @@ class QT_HBox(QT_Widget):
 
 
 class QT_Button(QT_Widget):
-    def __init__(self, text, **props):
+    def __init__(self, text, on_click: Callable[[None], None] | None = None, **props):
         super().__init__(**props)
 
+        if on_click:
+            self.on_click = on_click
+
         self.button = QPushButton(text=text)
-        self.button.clicked.connect(self.clicked)
+        self.button.clicked.connect(self.on_click)
         if props.get("key", None):
             self.button.setObjectName(f"{props['key']}_button")
 
         self.layout().addWidget(self.button)
 
-    def clicked(self):
-        print("Button clicked")
+    def on_click(self):
+        pass
 
 
 class QT_Label(QT_Widget):
