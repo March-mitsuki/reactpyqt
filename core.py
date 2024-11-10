@@ -1,14 +1,16 @@
 from __future__ import annotations
 from abc import ABC
-from typing import Callable, Any
+from typing import Callable
 from uuid import uuid4
 from PyQt6.QtWidgets import QLayout, QVBoxLayout, QHBoxLayout
 from loguru import logger
 
 from widget import QT_Widget, QT_HBox, QT_VBox, QT_Button, QT_Label, QT_Input
+from globalvar import __app__, __is_first_render__, __intervals__
+from reactive import create_effect, create_memo, create_signal, map_list, with_text
 
 import threading
-from PyQt6.QtCore import QRunnable, QThreadPool, pyqtSignal, pyqtSlot, QObject, QTimer
+from PyQt6.QtCore import QRunnable, QThreadPool, pyqtSignal, pyqtSlot, QObject
 
 
 def flatten(nested_list: list) -> list:
@@ -128,6 +130,12 @@ def insert_widgets_to_layout(
 
 
 class Timeout(QRunnable):
+    """
+    Sleep for a while and emit a signal when timeout.
+
+    self.timeout: int, timeout in seconds
+    """
+
     class TimtoutSignal(QObject):
         timeout = pyqtSignal()
 
@@ -144,110 +152,48 @@ class Timeout(QRunnable):
         self.signal.timeout.emit()
 
 
-class Interval:
-    def __init__(self, callback, interval):
-        self.callback = callback
-        self.interval = interval
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.callback)
-
-    def start(self):
-        self.timer.start(self.interval)
-
-    def stop(self):
-        self.timer.stop()
-
-
 def set_timeout(func, sec):
     timeout = Timeout(sec)
     timeout.signal.timeout.connect(func)
     QThreadPool.globalInstance().start(timeout)
 
 
-def set_interval(func, sec):
-    interval = Interval(func, sec)
-    interval.start()
-    return interval
+class Interval(QRunnable):
+    """
+    Run a function at regular intervals and emit a signal each time.
 
+    self.interval: int, interval in seconds
+    """
 
-__listener__ = None
-__is_first_render__ = True
-__app__ = None
+    class IntervalSignal(QObject):
+        tick = pyqtSignal()
 
-
-SignalAccessor = Callable[[], Any]
-SignalSetter = Callable[[Any], None]
-
-
-class Signal:
-    def __init__(self, init_value):
+    def __init__(self, interval: int):
         super().__init__()
-        self._value = init_value
-        self._subscribers = set()
+        self.interval = interval
+        self.signal = self.IntervalSignal()
+        self._running = True
 
-    def __repr__(self) -> str:
-        return f"<Signal value={self._value}>"
+    @pyqtSlot()
+    def run(self):
+        import time
 
-    def get(self):
-        if __listener__:
-            self._subscribers.add(__listener__)
-        return self._value
+        while self._running:
+            time.sleep(self.interval)
+            self.signal.tick.emit()
 
-    def set(self, next_value):
-        if callable(next_value):
-            self._value = next_value(self._value)
-        else:
-            if self._value == next_value:
-                return
-            self._value = next_value
-
-        for subscriber in self._subscribers:
-            subscriber()
-
-    def subscribe(self, cb):
-        self._subscribers.add(cb)
+    def stop(self):
+        logger.info("Stopping interval", self)
+        self._running = False
 
 
-def create_effect(cb):
-    global __listener__
-    prev_listener = __listener__
-    __listener__ = cb
-    cb()
-    __listener__ = prev_listener
-
-
-def create_signal(value) -> tuple[SignalAccessor, SignalSetter]:
-    s = Signal(value)
-
-    return (s.get, s.set)
-
-
-def create_memo(cb):
-    value, set_value = create_signal(None)
-    create_effect(lambda: set_value(cb()))
-    return value
-
-
-def untrack(cb):
-    global __listener__
-    prev_listener = __listener__
-    __listener__ = None
-    try:
-        return cb()
-    finally:
-        __listener__ = prev_listener
-
-
-def on_mount(cb):
-    create_effect(lambda: untrack(cb))
-
-
-def map_list(list: SignalAccessor, map_cb: Callable[[Any, int], None]) -> Callable:
-    result, set_result = create_signal([])
-    create_effect(
-        lambda: set_result([map_cb(item, idx) for idx, item in enumerate(list())])
-    )
-    return result
+def set_interval(func, sec):
+    global __intervals__
+    interval = Interval(sec)
+    __intervals__.append(interval)
+    interval.signal.tick.connect(func)
+    QThreadPool.globalInstance().start(interval)
+    return interval  # Return the interval instance to allow stopping it later
 
 
 class VirtualWidget(ABC):
@@ -806,7 +752,8 @@ if __name__ == "__main__":
             todo, set_todo = create_signal(["First Render", "Buy something"])
             create_effect(lambda: logger.info("todo changed: {}", todo()))
 
-            # count, set_count = create_signal(0)
+            count, set_count = create_signal(0)
+            set_interval(lambda: set_count(count() + 1), 1)
 
             def add_todo():
                 set_todo(lambda prev: [*prev, f"New Todo {len(prev)}"])
@@ -822,10 +769,18 @@ if __name__ == "__main__":
                     key=f"todo-item-component-{item}",
                 )
 
+            qss_bg, set_qss_bg = create_signal("background-color: 'red';")
+            set_timeout(lambda: set_qss_bg("background-color: 'orange';"), 5)
+
             return VBox(
                 Nav(is_logged_in=is_logged_in, key="nav-component"),
-                Label("Welcome to ReactivePyQt", key="welcome"),
-                # Label("Count"),
+                Label(with_text("Login state: {}", is_logged_in), key="login-state"),
+                Label(
+                    "Welcome to ReactivePyQt",
+                    key="welcome",
+                    qss=qss_bg,
+                ),
+                Label(with_text("Count {}", count), key="count"),
                 Input(key="input"),
                 VBox(
                     Label("Todo List", key="todo_label"),
@@ -865,6 +820,9 @@ if __name__ == "__main__":
             render(self.root, App())
 
     def handle_quit():
+        global __intervals__
+        for interval in __intervals__:
+            interval.stop()
         QThreadPool.globalInstance().clear()
 
     __app__ = QApplication(sys.argv)
