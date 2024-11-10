@@ -242,9 +242,11 @@ def on_mount(cb):
     create_effect(lambda: untrack(cb))
 
 
-def map_list(list: SignalAccessor, map_cb: Callable) -> Callable:
+def map_list(list: SignalAccessor, map_cb: Callable[[Any, int], None]) -> Callable:
     result, set_result = create_signal([])
-    create_effect(lambda: set_result([map_cb(item) for item in list()]))
+    create_effect(
+        lambda: set_result([map_cb(item, idx) for idx, item in enumerate(list())])
+    )
     return result
 
 
@@ -351,7 +353,7 @@ def is_main_thread():
     return threading.get_ident() == threading.main_thread().ident
 
 
-def handle_for_control_flow(
+def handle_control_flow_for(
     parent: ReactiveNode,
     child: ReactiveNode,
 ):
@@ -708,7 +710,7 @@ def render(container: QT_Widget, component: Component):
 
             if is_control_flow_node(node):
                 if isinstance(node.control_flow, For):
-                    handle_for_control_flow(host_node, node)
+                    handle_control_flow_for(host_node, node)
                 else:
                     raise ValueError(f"Invalid control flow {node.control_flow}")
             else:
@@ -775,10 +777,18 @@ if __name__ == "__main__":
 
     class TodoItem(Component):
         def render(self):
+            item = self.props.get("item")
+            remove_fn = self.props.get("remove_fn")
+
             return HBox(
-                Label("Item: ", key=f"todo-item-title-{self.props.get('item')}"),
-                Label(self.props.get("item"), key=self.props.get("item")),
-                key=f"todo-item-hbox-{self.props.get('item')}",
+                Label("Item: ", key=f"todo-item-title-{item}"),
+                Label(item, key=item),
+                Button(
+                    "Delete",
+                    key=f"todo-item-delete-{item}",
+                    on_click=lambda: remove_fn(self.props.get("idx")),
+                ),
+                key=f"todo-item-hbox-{item}",
             )
 
     class App(Component):
@@ -798,11 +808,19 @@ if __name__ == "__main__":
 
             # count, set_count = create_signal(0)
 
-            def render_list(item):
-                return TodoItem(item=item, key=f"todo-item-component-{item}")
-
             def add_todo():
                 set_todo(lambda prev: [*prev, f"New Todo {len(prev)}"])
+
+            def remove_todo(idx):
+                set_todo(lambda prev: prev[:idx] + prev[idx + 1 :])
+
+            def render_list(item, idx):
+                return TodoItem(
+                    item=item,
+                    idx=idx,
+                    remove_fn=remove_todo,
+                    key=f"todo-item-component-{item}",
+                )
 
             return VBox(
                 Nav(is_logged_in=is_logged_in, key="nav-component"),
