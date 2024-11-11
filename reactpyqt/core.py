@@ -13,7 +13,15 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QThreadPool
 import sys
 
-from .qt_widget import QT_Widget, QT_HBox, QT_VBox, QT_Button, QT_Label, QT_Input
+from .qt_widget import (
+    QT_Widget,
+    QT_HBox,
+    QT_VBox,
+    QT_Button,
+    QT_Label,
+    QT_Input,
+    QT_ScrollArea,
+)
 from .globalvar import __app__, __is_first_render__, __intervals__
 from .reactive import create_effect, SignalAccessor, create_memo, map_list
 from .utils.rect import zoom_rect
@@ -52,6 +60,8 @@ def create_qt_widget(node: VirtualWidget) -> QT_Widget:
         return QT_VBox(**node.props)
     elif tag == "hbox":
         return QT_HBox(**node.props)
+    elif tag == "scroll_area":
+        return QT_ScrollArea(**node.props)
     else:
         raise ValueError(f"Invalid tag: {tag}")
 
@@ -557,6 +567,11 @@ class VBox(VirtualWidget):
 class HBox(VirtualWidget):
     def __init__(self, *children, **props):
         super().__init__(tag="hbox", *children, **props)
+
+
+class ScrollArea(VirtualWidget):
+    def __init__(self, *children, **props):
+        super().__init__(tag="scroll_area", *children, **props)
 
 
 class For(ControlFlow):

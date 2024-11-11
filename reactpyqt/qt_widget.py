@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QLineEdit,
+    QScrollArea,
 )
 from PyQt6.QtCore import Qt
 
@@ -101,16 +102,13 @@ class QT_Widget(QWidget):
     A QWidget wrapper.
     """
 
-    def __init__(self, *children, **props):
+    def __init__(self, **props):
         super().__init__()
 
         defult_layout = QVBoxLayout()
         defult_layout.setContentsMargins(0, 0, 0, 0)
         defult_layout.setSpacing(0)
         layout: QLayout = props.pop("layout", defult_layout)
-
-        for widget in children:
-            layout.addWidget(create_widget(widget))
 
         apply_style_kwargs(self, layout, **props)
 
@@ -127,21 +125,39 @@ class QT_Widget(QWidget):
 
 
 class QT_VBox(QT_Widget):
-    def __init__(self, *children, **props):
+    def __init__(self, **props):
         props["layout"] = props.get("layout", QVBoxLayout())
         props["spacing"] = props.get("spacing", 0)
         props["margin"] = props.get("margin", (0, 0, 0, 0))
         props["alignment"] = props.get("alignment", Qt.AlignmentFlag.AlignTop)
-        super().__init__(*children, **props)
+        super().__init__(**props)
 
 
 class QT_HBox(QT_Widget):
-    def __init__(self, *children, **props):
+    def __init__(self, **props):
         props["layout"] = props.get("layout", QHBoxLayout())
         props["spacing"] = props.get("spacing", 0)
         props["margin"] = props.get("margin", (0, 0, 0, 0))
         props["alignment"] = props.get("alignment", Qt.AlignmentFlag.AlignLeft)
-        super().__init__(*children, **props)
+        super().__init__(**props)
+
+
+class QT_ScrollArea(QT_Widget):
+    def __init__(self, **props):
+        super().__init__(**props)
+
+        self.scroll_area = QScrollArea()
+        # self.scroll_area.setWidget(self)
+
+        widget_resizable = props.get("widget_resizable", True)
+        if callable(widget_resizable):
+            create_effect(
+                lambda: self.scroll_area.setWidgetResizable(widget_resizable())
+            )
+        else:
+            self.scroll_area.setWidgetResizable(widget_resizable)
+
+        self.layout().addWidget(self.scroll_area)
 
 
 class QT_Button(QT_Widget):
@@ -162,12 +178,7 @@ class QT_Button(QT_Widget):
         # 不知道为什么这里用 handle_accessor 会报错 wrapped C/C++ object has been deleted
         # handle_accessor(self.button.setText, text, operation="str")
         if callable(text):
-
-            def handler():
-                _text = text()
-                self.button.setText(str(_text))
-
-            create_effect(handler)
+            create_effect(lambda: self.button.setText(str(text())))
         else:
             self.button.setText(str(text))
 
@@ -190,12 +201,7 @@ class QT_Label(QT_Widget):
         # 不知道为什么这里用 handle_accessor 会报错 wrapped C/C++ object has been deleted
         # handle_accessor(self.label.setText, text, operation="str")
         if callable(text):
-
-            def handler():
-                _text = text()
-                self.label.setText(str(_text))
-
-            create_effect(handler)
+            create_effect(lambda: self.label.setText(str(text())))
         else:
             self.label.setText(str(text))
 
