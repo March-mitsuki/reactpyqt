@@ -3,7 +3,6 @@ from abc import ABC
 from typing import Callable, Any
 from uuid import uuid4
 from loguru import logger
-import os
 
 from PyQt6.QtWidgets import (
     QVBoxLayout,
@@ -14,40 +13,23 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QThreadPool
 import sys
 
-from qt_widget import QT_Widget, QT_HBox, QT_VBox, QT_Button, QT_Label, QT_Input
-from globalvar import __app__, __is_first_render__, __intervals__
-from reactive import (
-    create_effect,
-    create_memo,
-    map_list,
-    SignalAccessor,
-)
-from utils.rect import zoom_rect
-from utils.debug import print_layout_contents
-from utils.validation import (
+from .qt_widget import QT_Widget, QT_HBox, QT_VBox, QT_Button, QT_Label, QT_Input
+from .globalvar import __app__, __is_first_render__, __intervals__
+from .reactive import create_effect, SignalAccessor, create_memo, map_list
+from .utils.rect import zoom_rect
+from .utils.debug import print_layout_contents, print_tree
+from .utils.validation import (
     is_main_thread,
     is_virtual_widget_node,
     is_control_flow_node,
 )
-from utils.layout import insert_widgets_to_layout, remove_widgets_by_length
-from utils.common import flatten
-
-_env_debug = os.environ.get("DEBUG", "false").lower()
-# DEBUG = _env_debug == "true" or _env_debug == "1"
-DEBUG = True
-
-
-def edebug(*args, **kwargs):
-    if DEBUG:
-        logger.debug(*args, **kwargs)
-
-
-logger.edebug = edebug
+from .utils.layout import insert_widgets_to_layout, remove_widgets_by_length
+from .utils.common import flatten
 
 
 class VirtualWidget(ABC):
     def __init__(self, *children, **props):
-        logger.edebug(f"Creating VirtualWidget props {props}")
+        logger.debug(f"Creating VirtualWidget props {props}")
         self.tag: str | None = props.pop("tag", None)
         self.key: str = props.get("key", str(uuid4()))
         self.children: list[VirtualWidget | Component | ControlFlow] = children
@@ -57,33 +39,8 @@ class VirtualWidget(ABC):
         return f"<VirtualWidget tag={self.tag} key={self.key} props={self.props} children={self.children}>"
 
 
-class Button(VirtualWidget):
-    def __init__(self, text, **props):
-        super().__init__(tag="button", text=text, **props)
-
-
-class Label(VirtualWidget):
-    def __init__(self, text, **props):
-        super().__init__(tag="label", text=text, **props)
-
-
-class Input(VirtualWidget):
-    def __init__(self, **props):
-        super().__init__(tag="input", **props)
-
-
-class VBox(VirtualWidget):
-    def __init__(self, *children, **props):
-        super().__init__(tag="vbox", *children, **props)
-
-
-class HBox(VirtualWidget):
-    def __init__(self, *children, **props):
-        super().__init__(tag="hbox", *children, **props)
-
-
 def create_qt_widget(node: VirtualWidget) -> QT_Widget:
-    logger.edebug(f"Creating QT_Widget for {node}")
+    logger.debug(f"Creating QT_Widget for {node}")
     tag = node.tag
     if tag == "button":
         return QT_Button(**node.props)
@@ -132,7 +89,7 @@ def create_qt_widget_nested(vwgt: VirtualWidget) -> QT_Widget:
 
         if host_node is None:
             return
-        logger.edebug(f"Adding {add_node.qt_widget} to {host_node.key}")
+        logger.debug(f"Adding {add_node.qt_widget} to {host_node.key}")
         if add_node is None:
             return
         host_node.qt_widget.layout().addWidget(add_node.qt_widget)
@@ -162,7 +119,7 @@ def create_qt_widget_nested_component(component: Component):
 
         if host_node is None:
             return
-        logger.edebug(f"Adding {add_node.qt_widget} to {host_node.key}")
+        logger.debug(f"Adding {add_node.qt_widget} to {host_node.key}")
         if add_node is None:
             return
         host_node.qt_widget.layout().addWidget(add_node.qt_widget)
@@ -172,15 +129,12 @@ def create_qt_widget_nested_component(component: Component):
     root_widget = node.find_virtual_widget_child().qt_widget
     if root_widget is None:
         raise ValueError("Root widget is None")
-    logger.info(f"Create QT_Widget for {component.key}: {root_widget.objectName()}")
+    logger.debug(f"Create QT_Widget for {component.key}: {root_widget.objectName()}")
     print_layout_contents(root_widget.layout())
     return root_widget
 
 
 def handle_control_flow_for(parent: ReactiveNode, node: ReactiveNode):
-    if not isinstance(node.control_flow, For):
-        raise ValueError("ControlFlow must be For")
-
     length = None
 
     def handler():
@@ -235,16 +189,13 @@ def handle_control_flow_for(parent: ReactiveNode, node: ReactiveNode):
         else:
             length = current_length
 
-        print(f"For control flow {node.key} handler done")
+        logger.debug(f"For control flow {node.key} handler done")
 
     create_effect(handler)
 
 
 def handle_control_flow_switch(parent: ReactiveNode, node: ReactiveNode):
-    if not isinstance(node.control_flow, Switch):
-        raise ValueError("ControlFlow must be Switch")
-
-    logger.info(f"Handling Switch {node.key}")
+    logger.debug(f"Handling Switch {node.key}")
 
     def handler():
         if not is_main_thread():
@@ -259,7 +210,7 @@ def handle_control_flow_switch(parent: ReactiveNode, node: ReactiveNode):
                 current_case = case
                 break
 
-        logger.info(f"Switch {node.key} current case {current_case}")
+        logger.debug(f"Switch {node.key} current case {current_case}")
         if current_case is None:
             if __is_first_render__:
                 pass
@@ -271,7 +222,7 @@ def handle_control_flow_switch(parent: ReactiveNode, node: ReactiveNode):
             if isinstance(current_case.render, VirtualWidget):
                 qt_widget = create_qt_widget_nested(current_case.render)
             elif isinstance(current_case.render, Component):
-                logger.info(
+                logger.debug(
                     f"Creating QT_Widget for Switch-Case ControlFlow {current_case.render}"
                 )
                 qt_widget = create_qt_widget_nested_component(current_case.render)
@@ -281,7 +232,7 @@ def handle_control_flow_switch(parent: ReactiveNode, node: ReactiveNode):
                 raise ValueError(f"Invalid render {current_case.render}")
 
             if __is_first_render__:
-                logger.info(f"First render, adding {qt_widget} to {host_node.key}")
+                logger.debug(f"First render, adding {qt_widget} to {host_node.key}")
                 insert_widgets_to_layout(host_node, node, [qt_widget])
             else:
                 remove_widgets_by_length(host_node, node, 1)
@@ -290,18 +241,9 @@ def handle_control_flow_switch(parent: ReactiveNode, node: ReactiveNode):
     create_effect(handler)
 
 
-class SideEffectControlFlow:
-    def __init__(self, *, type):
-        self.type: str = type
-        self.source_node: ReactiveNode | None = None
-        self.old_start_idx: int | None = None
-        self.old_length: int | None = None
-        self.host_node: ReactiveNode | None = None
-
-
 class ReactiveNode(VirtualWidget):
     def __init__(self, *children, **props):
-        logger.edebug(f"Creating ReactiveNode props {props}")
+        logger.debug(f"Creating ReactiveNode props {props}")
         super().__init__(*children, **props)
         self.component: Component | None = None
         self.control_flow: ControlFlow | None = None
@@ -401,10 +343,12 @@ class ReactiveNode(VirtualWidget):
         nested = []
 
         children: list[VirtualWidget | Component | ControlFlow] = flatten(self.children)
-        print(f"Reconciling {self.key} children", [child.key for child in children])
+        logger.debug(
+            f"Reconciling {self.key} children", [child.key for child in children]
+        )
         prev_sibling = None
         for idx, child in enumerate(children):
-            print(f"Reconciling {self.key} child {child.key}")
+            logger.debug(f"Reconciling {self.key} child {child.key}")
             child_node = create_reactive_node(child, self)
 
             if idx == 0:
@@ -423,7 +367,7 @@ class ReactiveNode(VirtualWidget):
 
         while len(stack) > 0:
             current_node = stack.pop()
-            print(f"Reconciling {current_node.key}")
+            logger.debug(f"Reconciling {current_node.key}")
             nested_child = current_node.reconcile_children()
             stack.extend(nested_child)
 
@@ -445,12 +389,9 @@ class ReactiveNode(VirtualWidget):
             else:
                 exit_cb(current, depth) if exit_cb else None
 
-    def print_tree(self):
-        self.for_each_child(lambda node, depth: print(depth, "  " * depth, node))
-
     @staticmethod
     def from_component(component: Component, parent: ReactiveNode | None = None):
-        logger.edebug(f"Creating ReactiveNode from {component}")
+        logger.debug(f"Creating ReactiveNode from {component}")
         result = ReactiveNode(component.render(), **component.props)
         result.component = component
         result.parent = parent
@@ -459,7 +400,7 @@ class ReactiveNode(VirtualWidget):
 
     @staticmethod
     def from_virtual_widget(virtual_widget: VirtualWidget, parent: ReactiveNode):
-        logger.edebug(f"Creating ReactiveNode from {virtual_widget}")
+        logger.debug(f"Creating ReactiveNode from {virtual_widget}")
         result = ReactiveNode(
             *virtual_widget.children,
             tag=virtual_widget.tag,
@@ -497,69 +438,21 @@ class Component(ABC):
 
 
 class ControlFlow(ABC):
-    """
-    ControFlow must have a accessor property
-    """
-
-    def __init__(self, key: str):
+    def __init__(self, *, type, key=str(uuid4())):
+        self.type = type
         self.key = key
 
     def __repr__(self) -> str:
         return f"<ControlFlow[{self.__class__.__name__}] key={self.key}>"
 
 
-class For(ControlFlow):
-    def __init__(
-        self,
-        *,
-        key=str(uuid4()),
-        each: list,
-        map_fn: Callable | None = None,
-        fallback: Component | VirtualWidget | None = None,
-    ):
-        super().__init__(key=key)
-        self.map_fn = map_fn
-        self.each = each
-        self.fallback = fallback
-        self.accessor = create_memo(map_list(self.each, self.map_fn))
-
-
-class Switch(ControlFlow):
-    def __init__(
-        self,
-        *,
-        key=str(uuid4()),
-        condition: SignalAccessor,
-        cases: list[Case],
-        fallback: Component | VirtualWidget | None = None,
-    ):
-        super().__init__(key=key)
-        self.cases = cases
-        self.condition = condition
-        self.fallback = fallback
-
-
-class Case(ControlFlow):
-    # need nearest Switch node
-    def __init__(
-        self,
-        *,
-        key=str(uuid4()),
-        when: Callable[[Any], bool],
-        render: VirtualWidget | Component | ControlFlow,
-    ):
-        super().__init__(key=key)
-        self.render: VirtualWidget | Component | ControlFlow = render
-        self.when = when
-
-
 def render(container: QT_Widget, component: Component):
-    logger.edebug("render called")
+    logger.debug("render called")
 
     def commit_root():
         root_node = ReactiveNode.from_component(component)
         root_node.make_tree_after_this_node()
-        root_node.print_tree()
+        print_tree(root_node)
 
         def cb(node: ReactiveNode, _: int):
             if node.parent is None:
@@ -570,8 +463,10 @@ def render(container: QT_Widget, component: Component):
                 return
 
             if is_control_flow_node(node):
+                # if node.control_flow.type == "for":
                 if isinstance(node.control_flow, For):
                     handle_control_flow_for(host_node, node)
+                # elif node.control_flow.type == "switch":
                 elif isinstance(node.control_flow, Switch):
                     handle_control_flow_switch(host_node, node)
                 else:
@@ -581,7 +476,7 @@ def render(container: QT_Widget, component: Component):
                 if not added_node:
                     return
 
-                logger.edebug(f"Adding {added_node.key} to {host_node.key}")
+                logger.debug(f"Adding {added_node.key} to {host_node.key}")
                 host_node.qt_widget.layout().addWidget(added_node.qt_widget)
 
         root_node.for_each_child(cb)
@@ -589,22 +484,7 @@ def render(container: QT_Widget, component: Component):
         first_hold = root_node.find_virtual_widget_child()
         container.layout().addWidget(first_hold.qt_widget)
 
-        # logger.edebug(f"root_node.child {root_node.child}")
         print_layout_contents(container.layout())
-
-        # def find_widget(node: ReactiveNode, _: int):
-        #     if node.key == "todo_list":
-        #         logger.edebug(
-        #             f"Found todo_list {node}, layout {node.qt_widget.layout().objectName()}"
-        #         )
-        #         print_layout_contents(node.qt_widget.layout())
-        #     if node.key == "nav":
-        #         logger.edebug(
-        #             f"Found nav {node}, layout {node.qt_widget.layout().objectName()}"
-        #         )
-        #         print_layout_contents(node.qt_widget.layout())
-
-        # root_node.for_each_child(find_widget)
 
     commit_root()
     global __is_first_render__
@@ -649,3 +529,75 @@ class MainWindow:
         __app__.aboutToQuit.connect(self.handle_quit)
         self.qt_main_window.show()
         sys.exit(__app__.exec())
+
+
+########################################
+#           Basic Components           #
+########################################
+class Button(VirtualWidget):
+    def __init__(self, text, **props):
+        super().__init__(tag="button", text=text, **props)
+
+
+class Label(VirtualWidget):
+    def __init__(self, text, **props):
+        super().__init__(tag="label", text=text, **props)
+
+
+class Input(VirtualWidget):
+    def __init__(self, **props):
+        super().__init__(tag="input", **props)
+
+
+class VBox(VirtualWidget):
+    def __init__(self, *children, **props):
+        super().__init__(tag="vbox", *children, **props)
+
+
+class HBox(VirtualWidget):
+    def __init__(self, *children, **props):
+        super().__init__(tag="hbox", *children, **props)
+
+
+class For(ControlFlow):
+    def __init__(
+        self,
+        *,
+        key=None,
+        each: list,
+        map_fn: Callable | None = None,
+        fallback: Component | VirtualWidget | None = None,
+    ):
+        super().__init__(type="for", key=key)
+        self.map_fn = map_fn
+        self.each = each
+        self.fallback = fallback
+        self.accessor = create_memo(map_list(self.each, self.map_fn))
+
+
+class Switch(ControlFlow):
+    def __init__(
+        self,
+        *,
+        key=None,
+        condition: SignalAccessor,
+        cases: list[Case],
+        fallback: Component | VirtualWidget | None = None,
+    ):
+        super().__init__(type="switch", key=key)
+        self.cases = cases
+        self.condition = condition
+        self.fallback = fallback
+
+
+class Case(ControlFlow):
+    def __init__(
+        self,
+        *,
+        key=None,
+        when: Callable[[Any], bool],
+        render: VirtualWidget | Component | ControlFlow,
+    ):
+        super().__init__(type="case", key=key)
+        self.render: VirtualWidget | Component | ControlFlow = render
+        self.when = when

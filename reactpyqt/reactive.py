@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Callable, Any
 
-from globalvar import __listener__
+from .globalvar import __listener__
 
 
 SignalAccessor = Callable[[], Any]

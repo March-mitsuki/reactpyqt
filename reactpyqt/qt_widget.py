@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-from reactive import create_effect, SignalAccessor
+from .reactive import create_effect, SignalAccessor
 
 
 class QT_Layout(QLayout):

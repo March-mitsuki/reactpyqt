@@ -1,3 +1,4 @@
+from __future__ import annotations
 import threading
 
 # fmt: off
@@ -16,7 +17,7 @@ def is_main_thread():
     return threading.get_ident() == threading.main_thread().ident
 
 
-def is_component_node(obj: "ReactiveNode") -> bool:
+def is_component_node(obj: ReactiveNode) -> bool:
     """
     Check if the object is a component node
 
@@ -25,7 +26,7 @@ def is_component_node(obj: "ReactiveNode") -> bool:
     return obj.component is not None and obj.tag is None and obj.control_flow is None
 
 
-def is_virtual_widget_node(obj: "ReactiveNode") -> bool:
+def is_virtual_widget_node(obj: ReactiveNode) -> bool:
     """
     Check if the object is a component node
 
@@ -34,7 +35,7 @@ def is_virtual_widget_node(obj: "ReactiveNode") -> bool:
     return obj.component is None and obj.tag is not None and obj.control_flow is None
 
 
-def is_control_flow_node(obj: "ReactiveNode") -> bool:
+def is_control_flow_node(obj: ReactiveNode) -> bool:
     """
     Check if the object is a component node
 

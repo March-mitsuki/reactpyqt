@@ -31,7 +31,7 @@ def remove_widgets_from_layout(layout: QLayout, indexes: list[int]):
     for idx in sorted(indexes, reverse=True):
         item = layout.itemAt(idx)
         if item:
-            logger.info(
+            logger.debug(
                 f"Removing widget {item.widget().objectName()} from layout {layout.objectName()}"
             )
             layout.removeItem(item)
@@ -88,10 +88,10 @@ def insert_widgets_to_layout(
     )
     if not root_attached_node:
         raise ValueError("Cannot find root attached node")
-    logger.info(f"insert_widgets_to_layout root_attached_node {root_attached_node}")
+    logger.debug(f"insert_widgets_to_layout root_attached_node {root_attached_node}")
     prev_widget = root_attached_node.find_virtual_widget_prev_sibling()
     if prev_widget:
-        logger.info(f"insert_widgets_to_layout prev_widget {prev_widget}")
+        logger.debug(f"insert_widgets_to_layout prev_widget {prev_widget}")
         index = find_widget_index(host_layout, prev_widget.qt_widget.objectName())
         if index < 0:
             raise ValueError(
@@ -99,11 +99,11 @@ def insert_widgets_to_layout(
             )
         index += 1
     else:
-        logger.info("insert_widgets_to_layout no prev_widget")
+        logger.debug("insert_widgets_to_layout no prev_widget")
         index = 0
 
     for idx, widget in enumerate(widgets):
-        logger.info(
+        logger.debug(
             f"Inserting widget {widget.objectName()} to layout {host_layout.objectName()} at index {index + idx}"
         )
         host_layout.insertWidget(index + idx, widget)

@@ -1,6 +1,6 @@
 from PyQt6.QtCore import QRunnable, QThreadPool, pyqtSignal, pyqtSlot, QObject
 
-from globalvar import __intervals__
+from .globalvar import __intervals__
 
 
 class Timeout(QRunnable):
