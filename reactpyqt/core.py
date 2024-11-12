@@ -60,7 +60,7 @@ def create_qt_widget(node: VirtualWidget) -> QT_Widget:
         return QT_VBox(**node.props)
     elif tag == "hbox":
         return QT_HBox(**node.props)
-    elif tag == "scroll_area":
+    elif tag == "scrollarea":
         return QT_ScrollArea(**node.props)
     else:
         raise ValueError(f"Invalid tag: {tag}")
@@ -571,7 +571,7 @@ class HBox(VirtualWidget):
 
 class ScrollArea(VirtualWidget):
     def __init__(self, *children, **props):
-        super().__init__(tag="scroll_area", *children, **props)
+        super().__init__(tag="scrollarea", *children, **props)
 
 
 class For(ControlFlow):

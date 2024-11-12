@@ -15,14 +15,6 @@ from PyQt6.QtCore import Qt
 from .reactive import create_effect, SignalAccessor
 
 
-class QT_Layout(QLayout):
-    """
-    A type hint for change the name QLayout to QT_Layout.
-    """
-
-    pass
-
-
 def _set_with_operation(set_fn: Callable, value: Any, operation: str):
     if operation == "*":
         set_fn(*value)
@@ -55,8 +47,24 @@ def handle_accessor(
         _set_with_operation(set_fn, value, operation)
 
 
-def apply_style_kwargs(widget: QT_Widget, layout: QT_Layout, **kwargs):
-    for key, value in kwargs.items():
+def apply_widget_props(widget: QWidget, **props):
+    for key, value in props.items():
+        if key == "qss":
+            # widget.setStyleSheet(value)
+            handle_accessor(widget.setStyleSheet, value)
+        elif key == "minimum_size":
+            # widget.setMinimumSize(*value)
+            handle_accessor(widget.setMinimumSize, value, operation="*")
+        elif key == "maximum_size":
+            # widget.setMaximumSize(*value)
+            handle_accessor(widget.setMaximumSize, value, operation="*")
+        elif key == "size":
+            # widget.setFixedSize(*value)
+            handle_accessor(widget.setFixedSize, value, operation="*")
+
+
+def apply_layout_props(layout: QLayout, **props):
+    for key, value in props.items():
         if key == "margin":
             # layout.setContentsMargins(*value)
             handle_accessor(layout.setContentsMargins, value, operation="*")
@@ -72,18 +80,11 @@ def apply_style_kwargs(widget: QT_Widget, layout: QT_Layout, **kwargs):
         elif key == "alignment":
             # layout.setAlignment(value)
             handle_accessor(layout.setAlignment, value)
-        elif key == "qss":
-            # widget.setStyleSheet(value)
-            handle_accessor(widget.setStyleSheet, value)
-        elif key == "minimum_size":
-            # widget.setMinimumSize(*value)
-            handle_accessor(widget.setMinimumSize, value, operation="*")
-        elif key == "maximum_size":
-            # widget.setMaximumSize(*value)
-            handle_accessor(widget.setMaximumSize, value, operation="*")
-        elif key == "size":
-            # widget.setFixedSize(*value)
-            handle_accessor(widget.setFixedSize, value, operation="*")
+
+
+def apply_style_props(widget: QWidget, layout: QLayout, **props):
+    apply_widget_props(widget, **props)
+    apply_layout_props(layout, **props)
 
 
 def create_widget(widget: QT_Widget | str | int):
@@ -110,7 +111,7 @@ class QT_Widget(QWidget):
         defult_layout.setSpacing(0)
         layout: QLayout = props.pop("layout", defult_layout)
 
-        apply_style_kwargs(self, layout, **props)
+        apply_style_props(self, layout, **props)
 
         if props.get("ref", None):
             props["ref"] = self
@@ -142,22 +143,41 @@ class QT_HBox(QT_Widget):
         super().__init__(**props)
 
 
-class QT_ScrollArea(QT_Widget):
-    def __init__(self, **props):
-        super().__init__(**props)
+class QT_ScrollArea(QScrollArea):
+    """
+    特例, 因为需要用 ScrollArea 包裹内容, 所以这里不继承 QT_Widget
+    """
 
-        self.scroll_area = QScrollArea()
-        # self.scroll_area.setWidget(self)
+    def __init__(self, **props):
+        super().__init__()
+
+        self.contentwidget = QWidget()
+        if props.get("key", None):
+            self.contentwidget.setObjectName(f"{props['key']}_contentwidget")
+        apply_widget_props(self.contentwidget, **props)
+
+        self.contentlayout = props.get("layout", QVBoxLayout())
+        props["spacing"] = props.get("spacing", 0)
+        props["margin"] = props.get("margin", (0, 0, 0, 0))
+        props["alignment"] = props.get("alignment", Qt.AlignmentFlag.AlignTop)
+        if props.get("key", None):
+            self.contentlayout.setObjectName(f"{props['key']}_contentlayout")
+        apply_layout_props(self.contentlayout, **props)
+        self.contentwidget.setLayout(self.contentlayout)
+
+        if props.get("key", None):
+            self.setObjectName(f"{props['key']}_scrollarea")
 
         widget_resizable = props.get("widget_resizable", True)
         if callable(widget_resizable):
-            create_effect(
-                lambda: self.scroll_area.setWidgetResizable(widget_resizable())
-            )
+            create_effect(lambda: self.setWidgetResizable(widget_resizable()))
         else:
-            self.scroll_area.setWidgetResizable(widget_resizable)
+            self.setWidgetResizable(widget_resizable)
 
-        self.layout().addWidget(self.scroll_area)
+        self.setWidget(self.contentwidget)
+
+    def layout(self) -> QLayout:
+        return self.contentlayout
 
 
 class QT_Button(QT_Widget):
