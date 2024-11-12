@@ -38,8 +38,15 @@ from .utils.common import flatten
 class VirtualWidget(ABC):
     def __init__(self, *children, **props):
         logger.debug(f"Creating VirtualWidget props {props}")
+
+        if props.get("key", None):
+            self.key = props["key"]
+        else:
+            key = str(uuid4())
+            self.key = key
+            props["key"] = key
+
         self.tag: str | None = props.pop("tag", None)
-        self.key: str = props.get("key", str(uuid4()))
         self.children: list[VirtualWidget | Component | ControlFlow] = children
         self.props: dict = props
 
@@ -48,7 +55,7 @@ class VirtualWidget(ABC):
 
 
 def create_qt_widget(node: VirtualWidget) -> QT_Widget:
-    logger.debug(f"Creating QT_Widget for {node}")
+    logger.debug(f"Creating QT_Widget[{node.tag}] for {node}")
     tag = node.tag
     if tag == "button":
         return QT_Button(**node.props)
@@ -129,9 +136,9 @@ def create_qt_widget_nested_component(component: Component):
 
         if host_node is None:
             return
-        logger.debug(f"Adding {add_node.qt_widget} to {host_node.key}")
         if add_node is None:
             return
+        logger.debug(f"Adding {add_node.qt_widget} to {host_node.key}")
         host_node.qt_widget.layout().addWidget(add_node.qt_widget)
 
     node.for_each_child(cb)

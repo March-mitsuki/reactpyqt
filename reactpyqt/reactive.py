@@ -83,3 +83,13 @@ def map_list(list: SignalAccessor, map_cb: Callable[[Any, int], None]) -> Callab
         lambda: set_result([map_cb(item, idx) for idx, item in enumerate(list())])
     )
     return result
+
+
+class Ref:
+    def __init__(self, init_value=None):
+        self.current = init_value
+
+
+def create_ref(init_value=None):
+    ref = Ref(init_value)
+    return ref

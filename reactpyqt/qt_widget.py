@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
 )
 from PyQt6.QtCore import Qt
+from loguru import logger
 
 from .reactive import create_effect, SignalAccessor
 
@@ -105,6 +106,7 @@ class QT_Widget(QWidget):
 
     def __init__(self, **props):
         super().__init__()
+        logger.debug(f"Init QT_Widget with props: {props}")
 
         defult_layout = QVBoxLayout()
         defult_layout.setContentsMargins(0, 0, 0, 0)
@@ -114,8 +116,10 @@ class QT_Widget(QWidget):
         apply_style_props(self, layout, **props)
 
         if props.get("ref", None):
-            props["ref"] = self
+            logger.debug(f"Setting ref {self} to {props['ref']}")
+            props["ref"].current = self
         if props.get("key", None):
+            logger.debug(f"Setting objectName {props['key']} to {self}")
             self.setObjectName(props["key"])
             layout.setObjectName(f"{props['key']}_layout")
 
@@ -179,6 +183,9 @@ class QT_ScrollArea(QScrollArea):
     def layout(self) -> QLayout:
         return self.contentlayout
 
+    def __repr__(self) -> str:
+        return f"<QT_Widget[QT_ScrollArea] objectName={self.objectName()}>"
+
 
 class QT_Button(QT_Widget):
     def __init__(
@@ -211,6 +218,10 @@ class QT_Button(QT_Widget):
     def on_click(self):
         pass
 
+    def reconnect(self, on_click):
+        self.button.clicked.disconnect()
+        self.button.clicked.connect(on_click)
+
 
 class QT_Label(QT_Widget):
     def __init__(self, *, text, **props):
@@ -235,8 +246,19 @@ class QT_Input(QT_Widget):
     def __init__(self, **props):
         super().__init__(**props)
 
+        on_edit = props.get("on_edit", None)
+        if on_edit:
+            self.on_edit = on_edit
+
         self.input = QLineEdit()
+        self.input.textEdited.connect(self.on_edit)
         if props.get("key", None):
             self.input.setObjectName(f"{props['key']}_input")
 
         self.layout().addWidget(self.input)
+
+    def on_edit(self):
+        pass
+
+    def text(self):
+        return self.input.text()
