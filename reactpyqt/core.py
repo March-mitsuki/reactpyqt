@@ -1,5 +1,5 @@
 from __future__ import annotations
-from abc import ABC
+from abc import ABC, abstractmethod
 from typing import Callable, Any
 from uuid import uuid4
 from loguru import logger
@@ -127,21 +127,7 @@ def create_qt_widget_nested_component(component: Component):
     node = create_reactive_node(component, None)
     node.make_tree_after_this_node()
 
-    def cb(node: ReactiveNode, _: int):
-        if node.parent is None:
-            return
-
-        host_node = node.parent.find_virtual_widget_parent(include_self=True)
-        add_node = node.find_virtual_widget_child(include_self=True)
-
-        if host_node is None:
-            return
-        if add_node is None:
-            return
-        logger.debug(f"Adding {add_node.qt_widget} to {host_node.key}")
-        host_node.qt_widget.layout().addWidget(add_node.qt_widget)
-
-    node.for_each_child(cb)
+    node.for_each_child(commit_work)
 
     root_widget = node.find_virtual_widget_child().qt_widget
     if root_widget is None:
@@ -161,6 +147,8 @@ def handle_control_flow_for(parent: ReactiveNode, node: ReactiveNode):
         nonlocal length
 
         host_node = parent.find_virtual_widget_parent(include_self=True)
+        # logger.warning(f"Handling For {node.key}, host_node: {host_node.key}")
+        # logger.warning(f"Host node qt_widget: {host_node.qt_widget}")
 
         items: list[VirtualWidget | Component] = node.control_flow.accessor()
         if not isinstance(items, list):
@@ -238,16 +226,31 @@ def handle_control_flow_switch(parent: ReactiveNode, node: ReactiveNode):
         else:
             if isinstance(current_case.render, VirtualWidget):
                 qt_widget = create_qt_widget_nested(current_case.render)
+                # if current_case.node is None:
+                #     current_case.node = create_reactive_node(current_case.render, node)
+                #     current_case.node.make_tree_after_this_node()
+                #     current_case.node.for_each_child(commit_work)
+                # else:
+                #     current_case.node.for_each_child(commit_work)
+                # qt_widget = current_case.node.find_virtual_widget_child().qt_widget
             elif isinstance(current_case.render, Component):
-                logger.debug(
-                    f"Creating QT_Widget for Switch-Case ControlFlow {current_case.render}"
-                )
                 qt_widget = create_qt_widget_nested_component(current_case.render)
+                # if current_case.node is None:
+                #     current_case.node = create_reactive_node(current_case.render, node)
+                #     current_case.node.make_tree_after_this_node()
+                #     current_case.node.for_each_child(commit_work)
+                # else:
+                #     current_case.node.for_each_child(commit_work)
+                # qt_widget = current_case.node.find_virtual_widget_child().qt_widget
             elif isinstance(current_case.render, ControlFlow):
                 raise ValueError("ControlFlow cannot be nested")
             else:
                 raise ValueError(f"Invalid render {current_case.render}")
 
+            logger.warning(
+                f"Switch {node.key} current case {current_case}, qt_widget {qt_widget}"
+            )
+            print_layout_contents(qt_widget.layout())
             if __is_first_render__:
                 logger.debug(f"First render, adding {qt_widget} to {host_node.key}")
                 insert_widgets_to_layout(host_node, node, [qt_widget])
@@ -447,6 +450,7 @@ class Component(ABC):
     def __repr__(self) -> str:
         return f"<Component[{self.__class__.__name__}] props={self.props}>"
 
+    @abstractmethod
     def render(self) -> VirtualWidget | Component | ControlFlow:
         """
         Fine-Grained Reactivity 架构下的 render 只在初始化时运行一次
@@ -463,6 +467,30 @@ class ControlFlow(ABC):
         return f"<ControlFlow[{self.__class__.__name__}] key={self.key}>"
 
 
+def commit_work(node: ReactiveNode, deepth: int):
+    if node.parent is None:
+        return
+
+    host_node = node.parent.find_virtual_widget_parent(include_self=True)
+    if host_node is None:
+        return
+
+    if is_control_flow_node(node):
+        if isinstance(node.control_flow, For):
+            handle_control_flow_for(host_node, node)
+        elif isinstance(node.control_flow, Switch):
+            handle_control_flow_switch(host_node, node)
+        else:
+            raise ValueError(f"Invalid control flow {node.control_flow}")
+    else:
+        add_node = node.find_virtual_widget_child(include_self=True)
+        if add_node is None:
+            return
+
+        logger.debug(f"Adding {add_node.qt_widget} to {host_node.key}")
+        host_node.qt_widget.layout().addWidget(add_node.qt_widget)
+
+
 def render(container: QT_Widget, component: Component):
     logger.debug("render called")
 
@@ -471,32 +499,7 @@ def render(container: QT_Widget, component: Component):
         root_node.make_tree_after_this_node()
         print_tree(root_node)
 
-        def cb(node: ReactiveNode, _: int):
-            if node.parent is None:
-                return
-
-            host_node = node.parent.find_virtual_widget_parent(include_self=True)
-            if not host_node:
-                return
-
-            if is_control_flow_node(node):
-                # if node.control_flow.type == "for":
-                if isinstance(node.control_flow, For):
-                    handle_control_flow_for(host_node, node)
-                # elif node.control_flow.type == "switch":
-                elif isinstance(node.control_flow, Switch):
-                    handle_control_flow_switch(host_node, node)
-                else:
-                    raise ValueError(f"Invalid control flow {node.control_flow}")
-            else:
-                added_node = node.find_virtual_widget_child(include_self=True)
-                if not added_node:
-                    return
-
-                logger.debug(f"Adding {added_node.key} to {host_node.key}")
-                host_node.qt_widget.layout().addWidget(added_node.qt_widget)
-
-        root_node.for_each_child(cb)
+        root_node.for_each_child(commit_work)
 
         first_hold = root_node.find_virtual_widget_child()
         container.layout().addWidget(first_hold.qt_widget)
@@ -585,7 +588,7 @@ class For(ControlFlow):
     def __init__(
         self,
         *,
-        key=None,
+        key=str(uuid4()),
         each: list,
         map_fn: Callable | None = None,
         fallback: Component | VirtualWidget | None = None,
@@ -601,7 +604,7 @@ class Switch(ControlFlow):
     def __init__(
         self,
         *,
-        key=None,
+        key=str(uuid4()),
         condition: SignalAccessor,
         cases: list[Case],
         fallback: Component | VirtualWidget | None = None,
@@ -616,10 +619,11 @@ class Case(ControlFlow):
     def __init__(
         self,
         *,
-        key=None,
+        key=str(uuid4()),
         when: Callable[[Any], bool],
         render: VirtualWidget | Component | ControlFlow,
     ):
         super().__init__(type="case", key=key)
         self.render: VirtualWidget | Component | ControlFlow = render
         self.when = when
+        self.node = None
